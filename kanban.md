@@ -30,7 +30,7 @@
 
 ## 🚧 In Progress
 
-*(Nothing yet)*
+- [ ] Test all nodes in ComfyUI Desktop with real EXR files
 
 ---
 
@@ -45,41 +45,44 @@
 - [x] Add README.md with usage instructions
 - [x] Initialize git repository
 
+### 2. EXR Hot Folder Loader Node ✅
+- [x] Folder path input (user selects hotfolder)
+- [x] Detect latest EXR file in folder (by modification time)
+- [x] Load 16-bit EXR file
+- [x] Dynamic channel detection (list all available channels)
+- [x] IS_CHANGED implementation (detect new files)
+
+### 3. Matte Channel Splitter Node ✅
+- [x] Input: loaded EXR data via metadata
+- [x] Dynamic output generation per channel (up to 16)
+- [x] Convert channels to ComfyUI MASK tensors
+- [x] Channel filter option
+
+### 4. Metadata Display Node ✅
+- [x] Extract and display resolution, framerate, bitdepth, colorspace
+- [x] Pass metadata values as individual outputs
+- [x] Console output for visibility
+
+### 5. EXR Save Node ✅
+- [x] Accept image input
+- [x] Accept metadata input (optional)
+- [x] Save to 16-bit or 32-bit EXR
+- [x] Output path selection
+
+### 6. Preview Matte Node ✅ (Bonus!)
+- [x] Convert MASK to IMAGE for preview
+- [x] Optional colorization
+
 ---
 
 ## 🎯 Phase 1 - Core Single Still (Current Focus)
 
-### 2. EXR Hot Folder Loader Node
-- [ ] Folder path input (user selects hotfolder)
-- [ ] Detect latest EXR file in folder (by modification time)
-- [ ] Load 16-bit EXR file
-- [ ] Dynamic channel detection (list all available channels)
-- [ ] IS_CHANGED implementation (detect new files)
-
-### 3. Matte Channel Splitter Node
-- [ ] Input: loaded EXR data
-- [ ] Dynamic output generation per channel
-- [ ] Convert channels to ComfyUI IMAGE tensors
-- [ ] Preview capability for each channel
-
-### 4. Metadata Display
-- [ ] Extract and display:
-  - Resolution (width x height)
-  - Framerate (if present)
-  - Bit depth
-  - Color profile / colorspace
-- [ ] Pass metadata as linkable output
-
-### 5. Metadata Passthrough
-- [ ] Create METADATA datatype
-- [ ] Link metadata from loader → exporter
-- [ ] Preserve original metadata through pipeline
-
-### 6. EXR Save Node (Basic)
-- [ ] Accept matte channels as inputs
-- [ ] Accept metadata input
-- [ ] Compile back to 16-bit EXR
-- [ ] Output path selection
+### Testing
+- [ ] Test EXR Hot Folder Loader with real EXR files
+- [ ] Test Matte Channel Splitter with multi-channel EXRs
+- [ ] Test Metadata Display output
+- [ ] Test EXR Save Node roundtrip
+- [ ] Create sample workflow for demo
 
 ---
 
@@ -117,5 +120,5 @@
 
 | Version | Date       | Notes |
 |---------|------------|-------|
-| 0.1.0   | 2026-01-18 | Initial project setup |
+| 0.0.1   | 2026-01-18 | Initial project setup (scaffolding) |
 

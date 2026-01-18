@@ -1,7 +1,7 @@
 [project]
 name = "comfyui_vfx-bridge"
 description = "EXR hotfolder loader with matte splitting, metadata passthrough, and OCIO color management for Nuke/Houdini integration in ComfyUI"
-version = "0.1.0"
+version = "0.0.1"
 license = { file = "LICENSE" }
 readme = "README.md"
 requires-python = ">=3.10"
