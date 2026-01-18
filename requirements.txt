@@ -1,0 +1,12 @@
+# ComfyUI VFX Bridge - Requirements
+# Core dependencies
+numpy>=1.24.0
+OpenEXR>=3.2.0
+Imath>=3.1.0
+
+# Optional: OpenImageIO for advanced EXR handling
+# openimageio>=2.5.0
+
+# Phase 3: OCIO Color Management (uncomment when needed)
+# opencolorio>=2.3.0
+# colour-science>=0.4.0
