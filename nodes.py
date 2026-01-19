@@ -1134,6 +1134,33 @@ class AOVContactSheet:
         }
 
 
+
+
+class ShowText:
+    """Displays text in the node UI - for viewing metadata, channel lists, etc."""
+    
+    CATEGORY = "VFX Bridge"
+    FUNCTION = "show_text"
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("text",)
+    OUTPUT_NODE = True
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "text": ("STRING", {"forceInput": True}),
+            },
+        }
+    
+    def show_text(self, text: str):
+        # Print to console for visibility
+        print(f"\n[VFX Bridge] Text Output:\n{text}\n")
+        
+        # Return for UI display
+        return {"ui": {"text": [text]}, "result": (text,)}
+
+
 # =============================================================================
 # NODE MAPPINGS
 # =============================================================================
@@ -1150,6 +1177,7 @@ NODE_CLASS_MAPPINGS = {
     "ColorTransform": ColorTransform,
     "DisplayTransform": DisplayTransform,
     "AOVContactSheet": AOVContactSheet,
+    "ShowText": ShowText,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -1164,4 +1192,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ColorTransform": "Color Transform",
     "DisplayTransform": "Display Transform",
     "AOVContactSheet": "AOV Contact Sheet",
+    "ShowText": "Show Text",
 }
