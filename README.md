@@ -1,8 +1,14 @@
-# VFX Bridge for ComfyUI
+<div align="center">
+  <img src="assets/logo.png" alt="VFX Bridge Logo" width="400"/>
+  
+  # VFX Bridge for ComfyUI
+  
+  **Seamless VFX Pipeline Integration | 16-bit EXR | Matte Channels | OCIO Color Management**
+</div>
+
+---
 
 A custom ComfyUI node package for seamless integration with VFX pipelines (Nuke, Houdini). Load 16-bit EXR files from hotfolders, split matte channels, preserve metadata, and manage color with OCIO.
-
-![VFX Bridge Banner](sample_workflow/banner.png)
 
 ## Features
 
@@ -21,78 +27,24 @@ A custom ComfyUI node package for seamless integration with VFX pipelines (Nuke,
 4. Restart ComfyUI
 
 ### Manual Installation
-1. Clone this repository into your `ComfyUI/custom_nodes/` directory:
-   ```bash
-   git clone https://github.com/beverlyhillscop90210/comfyui_vfx-bridge ComfyUI/custom_nodes/comfyui_vfx-bridge
-   ```
-
-2. Install requirements:
-   ```bash
-   pip install -r requirements.txt
-   ```
-   
-   For portable version:
-   ```bash
-   .\python_embeded\python.exe -m pip install -r .\ComfyUI\custom_nodes\comfyui_vfx-bridge\requirements.txt
-   ```
-
-3. Restart ComfyUI
+```bash
+git clone https://github.com/beverlyhillscop90210/comfyui_vfx-bridge ComfyUI/custom_nodes/comfyui_vfx-bridge
+pip install -r ComfyUI/custom_nodes/comfyui_vfx-bridge/requirements.txt
+```
 
 ## Nodes
 
-### 🔥 EXR Hot Folder Loader
-Watches a folder and loads the latest EXR file automatically.
-
-| Input | Type | Description |
-|-------|------|-------------|
-| folder_path | STRING | Path to watch for EXR files |
-| auto_refresh | BOOLEAN | Auto-detect new files |
-
-| Output | Type | Description |
-|--------|------|-------------|
-| image | IMAGE | Loaded EXR as tensor |
-| metadata | METADATA | File metadata (resolution, colorspace, etc.) |
-| channels | LIST | Available channel names |
-
-### ✂️ Matte Channel Splitter
-Splits EXR into individual matte channels.
-
-| Input | Type | Description |
-|-------|------|-------------|
-| exr_data | EXR_DATA | Loaded EXR data |
-
-| Output | Type | Description |
-|--------|------|-------------|
-| matte_* | MASK | Individual matte channels (dynamic) |
-
-### 📋 Metadata Display
-Shows EXR metadata in the UI.
-
-| Display | Description |
-|---------|-------------|
-| Resolution | Width × Height |
-| Framerate | FPS (if present) |
-| Bit Depth | 16-bit / 32-bit |
-| Colorspace | ACES / sRGB / etc. |
-
-### 💾 EXR Save Node
-Compiles mattes back into a 16-bit EXR with metadata.
-
-| Input | Type | Description |
-|-------|------|-------------|
-| mattes | MASK[] | Matte channels to compile |
-| metadata | METADATA | Original metadata to preserve |
-| output_path | STRING | Save location |
-| bake_colorspace | BOOLEAN | Bake OCIO transform on export |
-
-## Usage
-
-1. Add **EXR Hot Folder Loader** node
-2. Set the folder path to your Nuke/Houdini render output
-3. Connect to **Matte Channel Splitter**
-4. Use individual matte outputs in your ComfyUI pipeline
-5. Connect **Metadata Display** to see file info
-6. Use **EXR Save Node** to compile back to EXR
+| Node | Description |
+|------|-------------|
+| **EXR Hot Folder Loader** | Watches folder, loads latest EXR, outputs beauty + channels + metadata |
+| **Matte Channel Splitter** | Splits EXR data into 16 individual matte outputs |
+| **Channel Selector** | Select specific channel by name |
+| **Metadata Display** | Shows resolution, FPS, bitdepth, colorspace |
+| **Preview Matte** | Convert MASK to IMAGE for preview |
+| **EXR to Image** | HDR tonemapping and exposure control |
+| **Mask to Image** | Simple MASK to IMAGE conversion |
+| **Output Transform** | Linear to sRGB, ACEScg to Rec.709 conversions |
+| **EXR Save** | Export back to 16/32-bit EXR |
 
 ## Requirements
 
@@ -103,24 +55,20 @@ Compiles mattes back into a 16-bit EXR with metadata.
 
 ## Roadmap
 
-- [x] Project setup
-- [ ] EXR Hot Folder Loader
-- [ ] Matte Channel Splitter
-- [ ] Metadata Display
-- [ ] EXR Save Node
+- [x] EXR Hot Folder Loader
+- [x] Matte Channel Splitter  
+- [x] Metadata Display
+- [x] EXR Save Node
+- [x] Output Transform
 - [ ] Batch Mode (image sequences)
-- [ ] OCIO Color Management
-
-## Credits
-
-Built for the VFX community by [beverlyhillscop90210](https://github.com/beverlyhillscop90210).
-
-Inspired by Nuke and Houdini workflows.
+- [ ] Full OCIO Integration
 
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
 
-## Star History
+---
 
-[![Star History Chart](https://api.star-history.com/svg?repos=beverlyhillscop90210/comfyui_vfx-bridge&type=Date)](https://star-history.com/#beverlyhillscop90210/comfyui_vfx-bridge&Date)
+<div align="center">
+  <sub>Built for the VFX community by peterschings</sub>
+</div>
