@@ -323,6 +323,7 @@ class EXRHotFolderLoader:
             },
             "optional": {
                 "auto_refresh": ("BOOLEAN", {"default": True}),
+                "output_mode": (["raw", "display_ready"], {"default": "raw"}),
             }
         }
     
@@ -335,13 +336,20 @@ class EXRHotFolderLoader:
             return get_file_hash(latest_exr)
         return ""
     
-    def load_exr(self, folder_path: str, auto_refresh: bool = True):
+    def load_exr(self, folder_path: str, auto_refresh: bool = True, output_mode: str = "raw"):
         latest_exr = get_latest_exr(folder_path)
         
         if latest_exr is None:
             raise ValueError(f"No EXR files found in: {folder_path}")
         
         image_data, metadata, channels = load_exr_file(latest_exr)
+        
+        # Output mode: raw = untouched linear data, display_ready = clamped 0-1 for preview
+        if output_mode == "display_ready":
+            # Simple clamp for preview (use Display Transform node for proper viewing)
+            image_data = np.clip(image_data, 0.0, 1.0)
+        # raw mode: no processing, keep HDR values as-is
+        
         image_tensor = torch.from_numpy(image_data).unsqueeze(0)
         channels_info = ", ".join(channels)
         
@@ -660,9 +668,20 @@ class EXRSaveNode:
         
         os.makedirs(output_folder, exist_ok=True)
         
-        if not filename.endswith('.exr'):
-            filename = f"{filename}.exr"
-        output_path = os.path.join(output_folder, filename)
+        # Strip .exr extension for base name
+        base_name = filename.replace('.exr', '').rstrip('.')
+        
+        # Auto-version: find next available version number
+        version = 1
+        while True:
+            if version == 1:
+                versioned_name = f"{base_name}.exr"
+            else:
+                versioned_name = f"{base_name}_v{version:03d}.exr"
+            output_path = os.path.join(output_folder, versioned_name)
+            if not os.path.exists(output_path):
+                break
+            version += 1
         
         if image.dim() == 4:
             image_np = image[0].cpu().numpy()
