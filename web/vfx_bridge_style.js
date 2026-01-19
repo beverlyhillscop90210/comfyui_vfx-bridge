@@ -1,4 +1,5 @@
 import { app } from "../../scripts/app.js";
+import { ComfyWidgets } from "../../scripts/widgets.js";
 
 const VFX_BRIDGE_NODES = [
     "EXRHotFolderLoader",
@@ -12,7 +13,7 @@ const VFX_BRIDGE_NODES = [
     "ColorTransform",
     "DisplayTransform",
     "AOVContactSheet",
-    "ShowText"
+    "Text",
 ];
 
 const ANTHRACITE = "#2d2d2d";
@@ -25,31 +26,35 @@ app.registerExtension({
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
         if (!VFX_BRIDGE_NODES.includes(nodeData.name)) return;
         
-        if (nodeData.name === "ShowText") {
-            const origOnExecuted = nodeType.prototype.onExecuted;
+        if (nodeData.name === "Text") {
+            // ShowText node with proper widget
+            const onNodeCreated = nodeType.prototype.onNodeCreated;
+            nodeType.prototype.onNodeCreated = function() {
+                onNodeCreated ? onNodeCreated.apply(this, []) : undefined;
+                
+                // Create a STRING widget for display
+                this.showValueWidget = ComfyWidgets["STRING"](this, "output", ["STRING", { multiline: true }], app).widget;
+                this.showValueWidget.inputEl.readOnly = true;
+                this.showValueWidget.inputEl.style.opacity = 0.8;
+                
+                // Don't serialize the widget value
+                this.showValueWidget.serializeValue = async () => "";
+                
+                this.color = ANTHRACITE;
+                this.bgcolor = ANTHRACITE_DARK;
+            };
+            
+            const onExecuted = nodeType.prototype.onExecuted;
             nodeType.prototype.onExecuted = function(message) {
-                if (origOnExecuted) origOnExecuted.apply(this, arguments);
+                onExecuted ? onExecuted.apply(this, [message]) : undefined;
                 if (message && message.text) {
-                    this.showTextValue = message.text[0] || "";
-                    this.setDirtyCanvas(true, true);
+                    this.showValueWidget.value = message.text[0];
                 }
             };
             
+            const origDraw = nodeType.prototype.onDrawForeground;
             nodeType.prototype.onDrawForeground = function(ctx) {
-                if (this.showTextValue) {
-                    ctx.save();
-                    ctx.font = "11px monospace";
-                    ctx.fillStyle = "#aaa";
-                    ctx.textAlign = "left";
-                    const lines = this.showTextValue.split("\n");
-                    const lineHeight = 14;
-                    const startY = 40;
-                    const maxLines = Math.floor((this.size[1] - 50) / lineHeight);
-                    for (let i = 0; i < Math.min(lines.length, maxLines); i++) {
-                        ctx.fillText(lines[i].substring(0, 40), 10, startY + i * lineHeight);
-                    }
-                    ctx.restore();
-                }
+                if (origDraw) origDraw.apply(this, arguments);
                 ctx.save();
                 ctx.font = "7px monospace";
                 ctx.fillStyle = WATERMARK;
@@ -57,15 +62,8 @@ app.registerExtension({
                 ctx.fillText("peterschings", this.size[0] - 5, this.size[1] - 3);
                 ctx.restore();
             };
-            
-            const origCreated = nodeType.prototype.onNodeCreated;
-            nodeType.prototype.onNodeCreated = function() {
-                if (origCreated) origCreated.apply(this, arguments);
-                this.color = ANTHRACITE;
-                this.bgcolor = ANTHRACITE_DARK;
-                this.size = [280, 200];
-            };
         } else {
+            // All other VFX Bridge nodes - just styling
             const origDraw = nodeType.prototype.onDrawForeground;
             nodeType.prototype.onDrawForeground = function(ctx) {
                 if (origDraw) origDraw.apply(this, arguments);
