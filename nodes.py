@@ -530,6 +530,168 @@ class PreviewMatte:
 
 
 # =============================================================================
+# CHANNEL SELECTOR NODE (Cleaner than fixed 16 outputs)
+# =============================================================================
+
+class ChannelSelector:
+    """
+    Select a specific channel from EXR by name.
+    Use multiple of these nodes for multiple channels.
+    """
+    
+    CATEGORY = "VFX Bridge"
+    FUNCTION = "select_channel"
+    RETURN_TYPES = ("MASK", "STRING")
+    RETURN_NAMES = ("matte", "channel_name")
+    OUTPUT_NODE = False
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "metadata": ("VFX_METADATA",),
+                "channel_name": ("STRING", {
+                    "default": "R",
+                    "multiline": False,
+                    "placeholder": "R, G, B, A, matte.R, etc."
+                }),
+            },
+        }
+    
+    def select_channel(self, metadata: dict, channel_name: str):
+        """Select a specific channel by name."""
+        
+        if '_channel_data' not in metadata:
+            raise ValueError("No channel data in metadata. Connect to EXR Hot Folder Loader.")
+        
+        channel_data = metadata['_channel_data']
+        available = list(channel_data.keys())
+        
+        # Clean up channel name
+        channel_name = channel_name.strip()
+        
+        if channel_name not in channel_data:
+            # Try case-insensitive match
+            for ch in available:
+                if ch.lower() == channel_name.lower():
+                    channel_name = ch
+                    break
+            else:
+                raise ValueError(f"Channel '{channel_name}' not found. Available: {', '.join(available)}")
+        
+        # Get channel data
+        mask_data = channel_data[channel_name]
+        mask_tensor = torch.from_numpy(mask_data)
+        
+        return (mask_tensor, channel_name)
+
+
+# =============================================================================
+# EXR TO IMAGE NODE (Convert 16-bit float to standard 0-1 IMAGE)
+# =============================================================================
+
+class EXRToImage:
+    """
+    Convert EXR float data to standard ComfyUI IMAGE format.
+    Clamps to 0-1 range and handles HDR tonemapping if needed.
+    Works like a reroute node for compatibility with other nodes.
+    """
+    
+    CATEGORY = "VFX Bridge"
+    FUNCTION = "convert"
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    OUTPUT_NODE = False
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+            },
+            "optional": {
+                "mode": (["clamp", "normalize", "tonemap"], {"default": "clamp"}),
+                "exposure": ("FLOAT", {"default": 0.0, "min": -10.0, "max": 10.0, "step": 0.1}),
+            }
+        }
+    
+    def convert(self, image: torch.Tensor, mode: str = "clamp", exposure: float = 0.0):
+        """Convert EXR image to standard format."""
+        
+        # Apply exposure adjustment (in stops)
+        if exposure != 0.0:
+            image = image * (2.0 ** exposure)
+        
+        if mode == "clamp":
+            # Simple clamp to 0-1
+            result = torch.clamp(image, 0.0, 1.0)
+            
+        elif mode == "normalize":
+            # Normalize to 0-1 based on min/max
+            img_min = image.min()
+            img_max = image.max()
+            if img_max > img_min:
+                result = (image - img_min) / (img_max - img_min)
+            else:
+                result = torch.zeros_like(image)
+                
+        elif mode == "tonemap":
+            # Simple Reinhard tonemapping for HDR
+            result = image / (1.0 + image)
+            result = torch.clamp(result, 0.0, 1.0)
+        
+        else:
+            result = torch.clamp(image, 0.0, 1.0)
+        
+        return (result,)
+
+
+# =============================================================================
+# MASK TO IMAGE NODE (Quick MASK to IMAGE conversion)
+# =============================================================================
+
+class MaskToImage:
+    """
+    Convert a MASK to a standard IMAGE.
+    Simple utility for compatibility.
+    """
+    
+    CATEGORY = "VFX Bridge"
+    FUNCTION = "convert"
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    OUTPUT_NODE = False
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "mask": ("MASK",),
+            },
+        }
+    
+    def convert(self, mask: torch.Tensor):
+        """Convert MASK to IMAGE."""
+        
+        # MASK is [H, W] or [B, H, W]
+        # IMAGE is [B, H, W, C]
+        
+        if mask.dim() == 2:
+            # [H, W] -> [1, H, W, 3]
+            image = mask.unsqueeze(0).unsqueeze(-1).repeat(1, 1, 1, 3)
+        elif mask.dim() == 3:
+            # [B, H, W] -> [B, H, W, 3]
+            image = mask.unsqueeze(-1).repeat(1, 1, 1, 3)
+        else:
+            image = mask
+        
+        # Clamp to valid range
+        image = torch.clamp(image, 0.0, 1.0)
+        
+        return (image,)
+
+
+# =============================================================================
 # NODE MAPPINGS
 # =============================================================================
 
@@ -539,6 +701,9 @@ NODE_CLASS_MAPPINGS = {
     "MetadataDisplay": MetadataDisplay,
     "EXRSaveNode": EXRSaveNode,
     "PreviewMatte": PreviewMatte,
+    "ChannelSelector": ChannelSelector,
+    "EXRToImage": EXRToImage,
+    "MaskToImage": MaskToImage,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -547,4 +712,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MetadataDisplay": "Metadata Display",
     "EXRSaveNode": "EXR Save",
     "PreviewMatte": "Preview Matte",
+    "ChannelSelector": "Channel Selector",
+    "EXRToImage": "EXR to Image",
+    "MaskToImage": "Mask to Image",
 }
