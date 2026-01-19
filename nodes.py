@@ -604,7 +604,7 @@ class MetadataDisplay:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "aovs": ("AOVS",),
+                "metadata": ("VFX_METADATA",),
             },
         }
     
@@ -666,7 +666,7 @@ class EXRSaveNode:
                 }),
             },
             "optional": {
-                "aovs": ("AOVS",),
+                "metadata": ("VFX_METADATA",),
                 "bitdepth": (["16", "32"], {"default": "16"}),
                 "bake_colorspace": ("BOOLEAN", {"default": False}),
                 "source_colorspace": (BUILTIN_COLORSPACES, {"default": "Linear (sRGB primaries)"}),
