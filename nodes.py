@@ -605,7 +605,7 @@ class MetadataDisplay:
 # =============================================================================
 
 class EXRSaveNode:
-    """Saves images back to a 16-bit EXR file with optional color bake."""
+    """Saves images back to a 16-bit EXR file with optional color bake and custom AOVs."""
     
     CATEGORY = "VFX Bridge"
     FUNCTION = "save_exr"
@@ -630,9 +630,14 @@ class EXRSaveNode:
             },
             "optional": {
                 "metadata": ("VFX_METADATA",),
-            },
-            "optional": {
-                "aovs": ("AOVS",),  # backward compatibility
+                "aovs": ("AOVS",),  # Original AOVs from EXR loader
+                "custom_aov_1": ("MASK",),  # Custom AOV (e.g., depth from ComfyUI)
+                "custom_aov_1_name": ("STRING", {"default": "custom1"}),
+                "custom_aov_2": ("MASK",),
+                "custom_aov_2_name": ("STRING", {"default": "custom2"}),
+                "custom_aov_3": ("MASK",),
+                "custom_aov_3_name": ("STRING", {"default": "custom3"}),
+                "include_original_aovs": ("BOOLEAN", {"default": True}),
                 "bitdepth": (["16", "32"], {"default": "16"}),
                 "bake_colorspace": ("BOOLEAN", {"default": False}),
                 "source_colorspace": (BUILTIN_COLORSPACES, {"default": "Linear (sRGB primaries)"}),
@@ -641,8 +646,13 @@ class EXRSaveNode:
         }
     
     def save_exr(self, image: torch.Tensor, output_folder: str, filename: str, 
-                 metadata: dict = None, bitdepth: str = "16",
-                 bake_colorspace: bool = False, source_colorspace: str = "Linear (sRGB primaries)",
+                 metadata: dict = None, aovs: dict = None,
+                 custom_aov_1: torch.Tensor = None, custom_aov_1_name: str = "custom1",
+                 custom_aov_2: torch.Tensor = None, custom_aov_2_name: str = "custom2",
+                 custom_aov_3: torch.Tensor = None, custom_aov_3_name: str = "custom3",
+                 include_original_aovs: bool = True,
+                 bitdepth: str = "16", bake_colorspace: bool = False, 
+                 source_colorspace: str = "Linear (sRGB primaries)",
                  output_colorspace: str = "sRGB"):
         
         if not HAS_OPENEXR:
@@ -676,28 +686,79 @@ class EXRSaveNode:
         
         header = OpenEXR.Header(width, height)
         
+        # Start with beauty channels (RGB/RGBA)
         if num_channels >= 3:
-            channel_names = ['R', 'G', 'B']
+            beauty_channels = ['R', 'G', 'B']
             if num_channels >= 4:
-                channel_names.append('A')
+                beauty_channels.append('A')
         else:
-            channel_names = ['Y']
+            beauty_channels = ['Y']
         
-        header['channels'] = {name: Imath.Channel(pixel_type) for name in channel_names}
-        
+        all_channels = {}
         channel_data = {}
-        for i, name in enumerate(channel_names):
+        
+        # Add beauty channels
+        for name in beauty_channels:
+            all_channels[name] = Imath.Channel(pixel_type)
+        
+        for i, name in enumerate(beauty_channels):
             if i < num_channels:
                 channel_array = image_np[:, :, i].astype(np_dtype)
             else:
                 channel_array = np.zeros((height, width), dtype=np_dtype)
             channel_data[name] = channel_array.tobytes()
         
+        # Add original AOVs if provided and requested
+        if aovs and include_original_aovs and 'channels' in aovs:
+            for aov_name, aov_data in aovs['channels'].items():
+                # Skip beauty channels (already added)
+                if aov_name in beauty_channels:
+                    continue
+                all_channels[aov_name] = Imath.Channel(pixel_type)
+                # Resize if needed
+                aov_array = aov_data
+                if aov_array.shape[0] != height or aov_array.shape[1] != width:
+                    y_idx = np.linspace(0, aov_array.shape[0] - 1, height).astype(int)
+                    x_idx = np.linspace(0, aov_array.shape[1] - 1, width).astype(int)
+                    aov_array = aov_array[y_idx][:, x_idx]
+                channel_data[aov_name] = aov_array.astype(np_dtype).tobytes()
+        
+        # Add custom AOVs
+        custom_aovs = [
+            (custom_aov_1, custom_aov_1_name),
+            (custom_aov_2, custom_aov_2_name),
+            (custom_aov_3, custom_aov_3_name),
+        ]
+        
+        for custom_mask, custom_name in custom_aovs:
+            if custom_mask is not None and custom_name:
+                custom_name = custom_name.strip()
+                if not custom_name:
+                    continue
+                # Convert torch tensor to numpy
+                if hasattr(custom_mask, 'cpu'):
+                    mask_np = custom_mask.cpu().numpy()
+                else:
+                    mask_np = np.array(custom_mask)
+                # Handle batch dimension
+                if mask_np.ndim == 3:
+                    mask_np = mask_np[0]
+                # Resize if needed
+                if mask_np.shape[0] != height or mask_np.shape[1] != width:
+                    y_idx = np.linspace(0, mask_np.shape[0] - 1, height).astype(int)
+                    x_idx = np.linspace(0, mask_np.shape[1] - 1, width).astype(int)
+                    mask_np = mask_np[y_idx][:, x_idx]
+                all_channels[custom_name] = Imath.Channel(pixel_type)
+                channel_data[custom_name] = mask_np.astype(np_dtype).tobytes()
+        
+        header['channels'] = all_channels
+        
         exr_file = OpenEXR.OutputFile(output_path, header)
         exr_file.writePixels(channel_data)
         exr_file.close()
         
-        print(f"[VFX Bridge] Saved: {output_path}")
+        aov_count = len(all_channels) - len(beauty_channels)
+        print(f"[VFX Bridge] Saved: {output_path} ({len(beauty_channels)} beauty + {aov_count} AOVs)")
         
         return (output_path,)
 
