@@ -640,11 +640,11 @@ class EXRSaveNode:
                 "metadata": ("VFX_METADATA",),
                 "aovs": ("AOVS",),  # Original AOVs from EXR loader
                 "custom_aov_1": ("MASK",),  # Custom AOV (e.g., depth from ComfyUI)
-                "custom_aov_1_name": ("STRING", {"default": "custom1"}),
+                "custom_aov_1_name": ("STRING", {"default": ""}),
                 "custom_aov_2": ("MASK",),
-                "custom_aov_2_name": ("STRING", {"default": "custom2"}),
+                "custom_aov_2_name": ("STRING", {"default": ""}),
                 "custom_aov_3": ("MASK",),
-                "custom_aov_3_name": ("STRING", {"default": "custom3"}),
+                "custom_aov_3_name": ("STRING", {"default": ""}),
                 "include_original_aovs": ("BOOLEAN", {"default": True}),
                 "bitdepth": (["16", "32"], {"default": "16"}),
                 "bake_colorspace": ("BOOLEAN", {"default": False}),
@@ -655,9 +655,9 @@ class EXRSaveNode:
     
     def save_exr(self, image: torch.Tensor, output_folder: str, filename: str, 
                  metadata: dict = None, aovs: dict = None,
-                 custom_aov_1: torch.Tensor = None, custom_aov_1_name: str = "custom1",
-                 custom_aov_2: torch.Tensor = None, custom_aov_2_name: str = "custom2",
-                 custom_aov_3: torch.Tensor = None, custom_aov_3_name: str = "custom3",
+                 custom_aov_1: torch.Tensor = None, custom_aov_1_name: str = "",
+                 custom_aov_2: torch.Tensor = None, custom_aov_2_name: str = "",
+                 custom_aov_3: torch.Tensor = None, custom_aov_3_name: str = "",
                  include_original_aovs: bool = True,
                  bitdepth: str = "16", bake_colorspace: bool = False, 
                  source_colorspace: str = "Linear (sRGB primaries)",
