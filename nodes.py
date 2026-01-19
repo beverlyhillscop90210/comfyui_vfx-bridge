@@ -307,8 +307,8 @@ class EXRHotFolderLoader:
     
     CATEGORY = "VFX Bridge"
     FUNCTION = "load_exr"
-    RETURN_TYPES = ("IMAGE", "VFX_METADATA", "STRING", "STRING")
-    RETURN_NAMES = ("image", "metadata", "channels_info", "filename")
+    RETURN_TYPES = ("IMAGE", "AOVS", "VFX_METADATA", "STRING", "STRING")
+    RETURN_NAMES = ("beauty", "aovs", "metadata", "channels", "filename")
     OUTPUT_NODE = False
     
     @classmethod
@@ -345,7 +345,16 @@ class EXRHotFolderLoader:
         image_tensor = torch.from_numpy(image_data).unsqueeze(0)
         channels_info = ", ".join(channels)
         
-        return (image_tensor, metadata, channels_info, metadata['filename'])
+        # AOVs: channel data for splitter/selector
+        aovs = {
+            "channels": metadata.get('_channel_data', {}),
+            "resolution": metadata.get('resolution', (0, 0)),
+        }
+        
+        # Clean metadata (no internal data)
+        clean_metadata = {k: v for k, v in metadata.items() if not k.startswith('_')}
+        
+        return (image_tensor, aovs, clean_metadata, channels_info, metadata['filename'])
 
 
 # =============================================================================
@@ -529,7 +538,7 @@ class MatteChannelSplitter:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "metadata": ("VFX_METADATA",),
+                "aovs": ("AOVS",),
             },
             "optional": {
                 "channel_filter": ("STRING", {
@@ -543,11 +552,11 @@ class MatteChannelSplitter:
     RETURN_TYPES = tuple(["MASK"] * MAX_CHANNELS + ["STRING"])
     RETURN_NAMES = tuple([f"channel_{i}" for i in range(MAX_CHANNELS)] + ["channel_names"])
     
-    def split_channels(self, metadata: dict, channel_filter: str = ""):
-        if '_channel_data' not in metadata:
+    def split_channels(self, aovs: dict, channel_filter: str = ""):
+        if 'channels' not in aovs:
             raise ValueError("No channel data. Connect to EXR Hot Folder Loader.")
         
-        channel_data = metadata['_channel_data']
+        channel_data = aovs['channels']
         all_channels = list(channel_data.keys())
         
         if channel_filter.strip():
@@ -595,7 +604,7 @@ class MetadataDisplay:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "metadata": ("VFX_METADATA",),
+                "aovs": ("AOVS",),
             },
         }
     
@@ -657,7 +666,7 @@ class EXRSaveNode:
                 }),
             },
             "optional": {
-                "metadata": ("VFX_METADATA",),
+                "aovs": ("AOVS",),
                 "bitdepth": (["16", "32"], {"default": "16"}),
                 "bake_colorspace": ("BOOLEAN", {"default": False}),
                 "source_colorspace": (BUILTIN_COLORSPACES, {"default": "Linear (sRGB primaries)"}),
@@ -781,16 +790,16 @@ class ChannelSelector:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "metadata": ("VFX_METADATA",),
+                "aovs": ("AOVS",),
                 "channel_name": ("STRING", {"default": "R", "multiline": False}),
             },
         }
     
-    def select_channel(self, metadata: dict, channel_name: str):
-        if '_channel_data' not in metadata:
+    def select_channel(self, aovs: dict, channel_name: str):
+        if 'channels' not in aovs:
             raise ValueError("No channel data.")
         
-        channel_data = metadata['_channel_data']
+        channel_data = aovs['channels']
         channel_name = channel_name.strip()
         
         if channel_name not in channel_data:
