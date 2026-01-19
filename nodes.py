@@ -481,46 +481,6 @@ class DisplayTransform:
 # COLOR INFO NODE
 # =============================================================================
 
-class ColorInfo:
-    """Display color management information."""
-    
-    CATEGORY = "VFX Bridge/Color"
-    FUNCTION = "get_info"
-    RETURN_TYPES = ("STRING", "STRING", "BOOLEAN")
-    RETURN_NAMES = ("info", "colorspaces", "ocio_available")
-    OUTPUT_NODE = True
-    
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {"required": {}}
-    
-    def get_info(self):
-        info_lines = [
-            "=== VFX Bridge Color Management ===",
-            "",
-            f"OCIO Installed: {'Yes' if HAS_OCIO else 'No'}",
-        ]
-        
-        if HAS_OCIO:
-            info_lines.append(f"OCIO Version: {OCIO_VERSION}")
-            ocio_env = os.environ.get('OCIO', 'Not set')
-            info_lines.append(f"OCIO Config: {ocio_env}")
-        
-        info_lines.extend([
-            "",
-            "Built-in Colorspaces:",
-        ])
-        
-        for cs in BUILTIN_COLORSPACES:
-            info_lines.append(f"  - {cs}")
-        
-        info_text = "\n".join(info_lines)
-        colorspaces_str = ", ".join(BUILTIN_COLORSPACES)
-        
-        print("\n" + info_text + "\n")
-        
-        return (info_text, colorspaces_str, HAS_OCIO)
-
 
 # =============================================================================
 # MATTE CHANNEL SPLITTER NODE
@@ -1109,7 +1069,6 @@ NODE_CLASS_MAPPINGS = {
     "MaskToImage": MaskToImage,
     "ColorTransform": ColorTransform,
     "DisplayTransform": DisplayTransform,
-    "ColorInfo": ColorInfo,
     "AOVContactSheet": AOVContactSheet,
 }
 
@@ -1124,6 +1083,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MaskToImage": "Mask to Image",
     "ColorTransform": "Color Transform",
     "DisplayTransform": "Display Transform",
-    "ColorInfo": "Color Info",
     "AOVContactSheet": "AOV Contact Sheet",
 }
