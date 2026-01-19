@@ -895,6 +895,205 @@ class MaskToImage:
         return (torch.clamp(image, 0.0, 1.0),)
 
 
+
+
+class AOVContactSheet:
+    """Creates a contact sheet preview of all AOV channels with labels - like Nuke's AOV viewer."""
+    
+    CATEGORY = "VFX Bridge"
+    FUNCTION = "create_contact_sheet"
+    RETURN_TYPES = ("IMAGE", "STRING")
+    RETURN_NAMES = ("contact_sheet", "channel_list")
+    OUTPUT_NODE = True
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "aovs": ("AOVS",),
+            },
+            "optional": {
+                "columns": ("INT", {"default": 4, "min": 1, "max": 8, "step": 1}),
+                "thumbnail_size": ("INT", {"default": 256, "min": 64, "max": 512, "step": 32}),
+                "label_height": ("INT", {"default": 24, "min": 16, "max": 48, "step": 4}),
+                "show_beauty": ("BOOLEAN", {"default": True}),
+            },
+        }
+    
+    def create_contact_sheet(self, aovs: dict, columns: int = 4, thumbnail_size: int = 256, 
+                             label_height: int = 24, show_beauty: bool = True):
+        if 'channels' not in aovs:
+            raise ValueError("No channel data in AOVS.")
+        
+        channel_data = aovs['channels']
+        channel_names = list(channel_data.keys())
+        
+        # Optionally add beauty as first item
+        items = []
+        if show_beauty and 'beauty' in aovs:
+            items.append(('beauty (RGB)', aovs['beauty'], True))  # (name, data, is_rgb)
+        
+        # Add all channels
+        for name in channel_names:
+            items.append((name, channel_data[name], False))  # (name, data, is_rgb)
+        
+        if not items:
+            raise ValueError("No channels to display.")
+        
+        num_items = len(items)
+        rows = (num_items + columns - 1) // columns
+        
+        cell_width = thumbnail_size
+        cell_height = thumbnail_size + label_height
+        sheet_width = columns * cell_width
+        sheet_height = rows * cell_height
+        
+        # Create contact sheet (RGB)
+        sheet = np.zeros((sheet_height, sheet_width, 3), dtype=np.float32)
+        
+        # Fill background with dark gray
+        sheet[:, :] = 0.15
+        
+        for idx, (name, data, is_rgb) in enumerate(items):
+            row = idx // columns
+            col = idx % columns
+            
+            x_start = col * cell_width
+            y_start = row * cell_height
+            
+            # Get thumbnail data
+            if is_rgb:
+                # RGB image - already HWC
+                thumb_data = data
+            else:
+                # Single channel - convert to grayscale RGB
+                thumb_data = np.stack([data, data, data], axis=-1)
+            
+            # Resize to thumbnail size
+            h, w = thumb_data.shape[:2]
+            if h != thumbnail_size or w != thumbnail_size:
+                # Simple resize using numpy
+                y_indices = np.linspace(0, h - 1, thumbnail_size).astype(int)
+                x_indices = np.linspace(0, w - 1, thumbnail_size).astype(int)
+                thumb_data = thumb_data[y_indices][:, x_indices]
+            
+            # Normalize/clamp for display
+            thumb_data = np.clip(thumb_data, 0, 1)
+            
+            # Place thumbnail
+            sheet[y_start:y_start + thumbnail_size, x_start:x_start + thumbnail_size] = thumb_data
+            
+            # Draw label background
+            label_y = y_start + thumbnail_size
+            sheet[label_y:label_y + label_height, x_start:x_start + cell_width] = 0.08
+            
+            # Draw text label (simple pixel text)
+            self._draw_text(sheet, name[:20], x_start + 4, label_y + 4, label_height - 8)
+        
+        # Convert to torch tensor [B, H, W, C]
+        contact_sheet = torch.from_numpy(sheet).unsqueeze(0)
+        
+        channel_list = "\n".join([item[0] for item in items])
+        
+        return {"ui": {"images": []}, "result": (contact_sheet, channel_list)}
+    
+    def _draw_text(self, img: np.ndarray, text: str, x: int, y: int, height: int):
+        """Draw simple pixel text on the image."""
+        # Simple 5x7 pixel font for basic chars
+        font = self._get_pixel_font()
+        scale = max(1, height // 7)
+        
+        cursor_x = x
+        for char in text:
+            if char in font:
+                bitmap = font[char]
+                for row_idx, row in enumerate(bitmap):
+                    for col_idx, pixel in enumerate(row):
+                        if pixel:
+                            px = cursor_x + col_idx * scale
+                            py = y + row_idx * scale
+                            for sy in range(scale):
+                                for sx in range(scale):
+                                    if 0 <= py + sy < img.shape[0] and 0 <= px + sx < img.shape[1]:
+                                        img[py + sy, px + sx] = [0.9, 0.9, 0.9]
+                cursor_x += (len(bitmap[0]) + 1) * scale
+            else:
+                cursor_x += 4 * scale
+    
+    def _get_pixel_font(self):
+        """Simple 5-column pixel font."""
+        return {
+            'A': [[0,1,1,0],[1,0,0,1],[1,1,1,1],[1,0,0,1],[1,0,0,1]],
+            'B': [[1,1,1,0],[1,0,0,1],[1,1,1,0],[1,0,0,1],[1,1,1,0]],
+            'C': [[0,1,1,1],[1,0,0,0],[1,0,0,0],[1,0,0,0],[0,1,1,1]],
+            'D': [[1,1,1,0],[1,0,0,1],[1,0,0,1],[1,0,0,1],[1,1,1,0]],
+            'E': [[1,1,1,1],[1,0,0,0],[1,1,1,0],[1,0,0,0],[1,1,1,1]],
+            'F': [[1,1,1,1],[1,0,0,0],[1,1,1,0],[1,0,0,0],[1,0,0,0]],
+            'G': [[0,1,1,1],[1,0,0,0],[1,0,1,1],[1,0,0,1],[0,1,1,0]],
+            'H': [[1,0,0,1],[1,0,0,1],[1,1,1,1],[1,0,0,1],[1,0,0,1]],
+            'I': [[1,1,1],[0,1,0],[0,1,0],[0,1,0],[1,1,1]],
+            'J': [[0,0,1],[0,0,1],[0,0,1],[1,0,1],[0,1,0]],
+            'K': [[1,0,0,1],[1,0,1,0],[1,1,0,0],[1,0,1,0],[1,0,0,1]],
+            'L': [[1,0,0,0],[1,0,0,0],[1,0,0,0],[1,0,0,0],[1,1,1,1]],
+            'M': [[1,0,0,0,1],[1,1,0,1,1],[1,0,1,0,1],[1,0,0,0,1],[1,0,0,0,1]],
+            'N': [[1,0,0,1],[1,1,0,1],[1,0,1,1],[1,0,0,1],[1,0,0,1]],
+            'O': [[0,1,1,0],[1,0,0,1],[1,0,0,1],[1,0,0,1],[0,1,1,0]],
+            'P': [[1,1,1,0],[1,0,0,1],[1,1,1,0],[1,0,0,0],[1,0,0,0]],
+            'Q': [[0,1,1,0],[1,0,0,1],[1,0,0,1],[1,0,1,0],[0,1,0,1]],
+            'R': [[1,1,1,0],[1,0,0,1],[1,1,1,0],[1,0,1,0],[1,0,0,1]],
+            'S': [[0,1,1,1],[1,0,0,0],[0,1,1,0],[0,0,0,1],[1,1,1,0]],
+            'T': [[1,1,1,1,1],[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0]],
+            'U': [[1,0,0,1],[1,0,0,1],[1,0,0,1],[1,0,0,1],[0,1,1,0]],
+            'V': [[1,0,0,0,1],[1,0,0,0,1],[0,1,0,1,0],[0,1,0,1,0],[0,0,1,0,0]],
+            'W': [[1,0,0,0,1],[1,0,0,0,1],[1,0,1,0,1],[1,1,0,1,1],[1,0,0,0,1]],
+            'X': [[1,0,0,1],[0,1,1,0],[0,1,1,0],[0,1,1,0],[1,0,0,1]],
+            'Y': [[1,0,0,0,1],[0,1,0,1,0],[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0]],
+            'Z': [[1,1,1,1],[0,0,1,0],[0,1,0,0],[1,0,0,0],[1,1,1,1]],
+            'a': [[0,0,0,0],[0,1,1,0],[1,0,1,1],[1,0,0,1],[0,1,1,1]],
+            'b': [[1,0,0,0],[1,1,1,0],[1,0,0,1],[1,0,0,1],[1,1,1,0]],
+            'c': [[0,0,0,0],[0,1,1,1],[1,0,0,0],[1,0,0,0],[0,1,1,1]],
+            'd': [[0,0,0,1],[0,1,1,1],[1,0,0,1],[1,0,0,1],[0,1,1,1]],
+            'e': [[0,1,1,0],[1,0,0,1],[1,1,1,1],[1,0,0,0],[0,1,1,1]],
+            'f': [[0,0,1,1],[0,1,0,0],[1,1,1,0],[0,1,0,0],[0,1,0,0]],
+            'g': [[0,1,1,1],[1,0,0,1],[0,1,1,1],[0,0,0,1],[0,1,1,0]],
+            'h': [[1,0,0,0],[1,1,1,0],[1,0,0,1],[1,0,0,1],[1,0,0,1]],
+            'i': [[0,1,0],[0,0,0],[0,1,0],[0,1,0],[0,1,0]],
+            'j': [[0,0,1],[0,0,0],[0,0,1],[0,0,1],[0,1,0]],
+            'k': [[1,0,0,0],[1,0,1,0],[1,1,0,0],[1,0,1,0],[1,0,0,1]],
+            'l': [[1,1,0],[0,1,0],[0,1,0],[0,1,0],[0,1,1]],
+            'm': [[0,0,0,0,0],[1,1,0,1,0],[1,0,1,0,1],[1,0,1,0,1],[1,0,0,0,1]],
+            'n': [[0,0,0,0],[1,1,1,0],[1,0,0,1],[1,0,0,1],[1,0,0,1]],
+            'o': [[0,0,0,0],[0,1,1,0],[1,0,0,1],[1,0,0,1],[0,1,1,0]],
+            'p': [[0,0,0,0],[1,1,1,0],[1,0,0,1],[1,1,1,0],[1,0,0,0]],
+            'q': [[0,0,0,0],[0,1,1,1],[1,0,0,1],[0,1,1,1],[0,0,0,1]],
+            'r': [[0,0,0,0],[1,0,1,1],[1,1,0,0],[1,0,0,0],[1,0,0,0]],
+            's': [[0,0,0,0],[0,1,1,1],[0,1,0,0],[0,0,1,0],[1,1,1,0]],
+            't': [[0,1,0,0],[1,1,1,0],[0,1,0,0],[0,1,0,0],[0,0,1,1]],
+            'u': [[0,0,0,0],[1,0,0,1],[1,0,0,1],[1,0,0,1],[0,1,1,1]],
+            'v': [[0,0,0,0,0],[1,0,0,0,1],[0,1,0,1,0],[0,1,0,1,0],[0,0,1,0,0]],
+            'w': [[0,0,0,0,0],[1,0,0,0,1],[1,0,1,0,1],[1,0,1,0,1],[0,1,0,1,0]],
+            'x': [[0,0,0,0],[1,0,0,1],[0,1,1,0],[0,1,1,0],[1,0,0,1]],
+            'y': [[0,0,0,0],[1,0,0,1],[0,1,1,1],[0,0,0,1],[0,1,1,0]],
+            'z': [[0,0,0,0],[1,1,1,1],[0,0,1,0],[0,1,0,0],[1,1,1,1]],
+            '0': [[0,1,1,0],[1,0,0,1],[1,0,0,1],[1,0,0,1],[0,1,1,0]],
+            '1': [[0,1,0],[1,1,0],[0,1,0],[0,1,0],[1,1,1]],
+            '2': [[0,1,1,0],[1,0,0,1],[0,0,1,0],[0,1,0,0],[1,1,1,1]],
+            '3': [[1,1,1,0],[0,0,0,1],[0,1,1,0],[0,0,0,1],[1,1,1,0]],
+            '4': [[1,0,0,1],[1,0,0,1],[1,1,1,1],[0,0,0,1],[0,0,0,1]],
+            '5': [[1,1,1,1],[1,0,0,0],[1,1,1,0],[0,0,0,1],[1,1,1,0]],
+            '6': [[0,1,1,0],[1,0,0,0],[1,1,1,0],[1,0,0,1],[0,1,1,0]],
+            '7': [[1,1,1,1],[0,0,0,1],[0,0,1,0],[0,1,0,0],[0,1,0,0]],
+            '8': [[0,1,1,0],[1,0,0,1],[0,1,1,0],[1,0,0,1],[0,1,1,0]],
+            '9': [[0,1,1,0],[1,0,0,1],[0,1,1,1],[0,0,0,1],[0,1,1,0]],
+            '.': [[0],[0],[0],[0],[1]],
+            '_': [[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0],[1,1,1,1]],
+            '-': [[0,0,0,0],[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],
+            ' ': [[0,0],[0,0],[0,0],[0,0],[0,0]],
+            '(': [[0,1],[1,0],[1,0],[1,0],[0,1]],
+            ')': [[1,0],[0,1],[0,1],[0,1],[1,0]],
+        }
+
+
 # =============================================================================
 # NODE MAPPINGS
 # =============================================================================
@@ -911,6 +1110,7 @@ NODE_CLASS_MAPPINGS = {
     "ColorTransform": ColorTransform,
     "DisplayTransform": DisplayTransform,
     "ColorInfo": ColorInfo,
+    "AOVContactSheet": AOVContactSheet,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -925,4 +1125,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ColorTransform": "Color Transform",
     "DisplayTransform": "Display Transform",
     "ColorInfo": "Color Info",
+    "AOVContactSheet": "AOV Contact Sheet",
 }
