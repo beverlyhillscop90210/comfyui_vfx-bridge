@@ -784,39 +784,72 @@ class PreviewMatte:
 
 
 class ChannelSelector:
-    """Select a specific channel by name."""
+    """Select a specific channel by name from dropdown or custom input."""
     
     CATEGORY = "VFX Bridge"
     FUNCTION = "select_channel"
-    RETURN_TYPES = ("MASK", "STRING")
-    RETURN_NAMES = ("matte", "channel_name")
+    RETURN_TYPES = ("MASK", "STRING", "STRING")
+    RETURN_NAMES = ("matte", "channel_name", "available_channels")
     OUTPUT_NODE = False
+    
+    # Common EXR channel names for dropdown
+    COMMON_CHANNELS = [
+        "R", "G", "B", "A",
+        "RGB.R", "RGB.G", "RGB.B",
+        "RGBA.R", "RGBA.G", "RGBA.B", "RGBA.A",
+        "crypto_object.R", "crypto_object.G", "crypto_object.B",
+        "crypto_material.R", "crypto_material.G", "crypto_material.B",
+        "crypto_asset.R", "crypto_asset.G", "crypto_asset.B",
+        "matte.R", "matte.G", "matte.B", "matte.A",
+        "id.R", "id.G", "id.B",
+        "Z", "depth.Z",
+        "N.X", "N.Y", "N.Z",
+        "P.X", "P.Y", "P.Z",
+        "UV.U", "UV.V",
+        "[CUSTOM]"
+    ]
     
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
                 "aovs": ("AOVS",),
-                "channel_name": ("STRING", {"default": "R", "multiline": False}),
+                "preset": (cls.COMMON_CHANNELS, {"default": "R"}),
+            },
+            "optional": {
+                "custom_channel": ("STRING", {"default": "", "multiline": False}),
             },
         }
     
-    def select_channel(self, aovs: dict, channel_name: str):
+    def select_channel(self, aovs: dict, preset: str, custom_channel: str = ""):
         if 'channels' not in aovs:
-            raise ValueError("No channel data.")
+            raise ValueError("No channel data in AOVS.")
         
         channel_data = aovs['channels']
-        channel_name = channel_name.strip()
+        available = list(channel_data.keys())
+        available_str = ", ".join(available)
         
-        if channel_name not in channel_data:
-            for ch in channel_data.keys():
-                if ch.lower() == channel_name.lower():
-                    channel_name = ch
-                    break
-            else:
-                raise ValueError(f"Channel '{channel_name}' not found.")
+        # Use custom if preset is [CUSTOM], otherwise use preset
+        channel_name = custom_channel.strip() if preset == "[CUSTOM]" else preset
         
-        return (torch.from_numpy(channel_data[channel_name]), channel_name)
+        if not channel_name:
+            raise ValueError(f"No channel specified. Available: {available_str}")
+        
+        # Exact match first
+        if channel_name in channel_data:
+            return (torch.from_numpy(channel_data[channel_name]), channel_name, available_str)
+        
+        # Case-insensitive match
+        for ch in channel_data.keys():
+            if ch.lower() == channel_name.lower():
+                return (torch.from_numpy(channel_data[ch]), ch, available_str)
+        
+        # Partial match (e.g., "R" matches "RGB.R" or "RGBA.R")
+        for ch in channel_data.keys():
+            if ch.endswith("." + channel_name) or ch.endswith("." + channel_name.upper()):
+                return (torch.from_numpy(channel_data[ch]), ch, available_str)
+        
+        raise ValueError(f"Channel '{channel_name}' not found. Available: {available_str}")
 
 
 class EXRToImage:
