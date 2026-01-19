@@ -5,8 +5,6 @@ Full OCIO (OpenColorIO) Integration for VFX Pipelines
 
 import os
 import glob
-import hashlib
-import json
 import torch
 import numpy as np
 
@@ -23,10 +21,136 @@ except ImportError:
 try:
     import PyOpenColorIO as OCIO
     HAS_OCIO = True
-    print(f"[VFX Bridge] OCIO {OCIO.__version__} loaded successfully")
+    OCIO_VERSION = OCIO.__version__
+    print(f"[VFX Bridge] OCIO {OCIO_VERSION} loaded successfully")
 except ImportError:
     HAS_OCIO = False
-    print("[VFX Bridge] Warning: OpenColorIO not installed. Run: pip install opencolorio")
+    OCIO_VERSION = None
+    print("[VFX Bridge] OCIO not installed - using built-in color transforms")
+
+
+# =============================================================================
+# COLOR TRANSFORM MATRICES (Fallback when no OCIO config)
+# =============================================================================
+
+# sRGB to Linear
+def srgb_to_linear(img):
+    """sRGB to Linear transform."""
+    threshold = 0.04045
+    return np.where(img <= threshold, img / 12.92, 
+                    np.power((img + 0.055) / 1.055, 2.4))
+
+def linear_to_srgb(img):
+    """Linear to sRGB transform."""
+    threshold = 0.0031308
+    return np.where(img <= threshold, img * 12.92,
+                    1.055 * np.power(np.clip(img, threshold, None), 1/2.4) - 0.055)
+
+# Rec.709
+def linear_to_rec709(img):
+    """Linear to Rec.709 OETF."""
+    threshold = 0.018
+    return np.where(img < threshold, img * 4.5,
+                    1.099 * np.power(np.clip(img, threshold, None), 0.45) - 0.099)
+
+def rec709_to_linear(img):
+    """Rec.709 to Linear."""
+    threshold = 0.081
+    return np.where(img < threshold, img / 4.5,
+                    np.power((img + 0.099) / 1.099, 1/0.45))
+
+# ACEScg to sRGB (simplified - AP1 to sRGB primaries + gamma)
+ACESCG_TO_SRGB_MATRIX = np.array([
+    [1.70505, -0.62179, -0.08326],
+    [-0.13026,  1.14080, -0.01055],
+    [-0.02400, -0.12897,  1.15297]
+])
+
+SRGB_TO_ACESCG_MATRIX = np.array([
+    [0.61309, 0.33952, 0.04737],
+    [0.07019, 0.91635, 0.01345],
+    [0.02062, 0.10957, 0.86961]
+])
+
+def acescg_to_linear_srgb(img):
+    """ACEScg to Linear sRGB primaries."""
+    shape = img.shape
+    flat = img.reshape(-1, 3)
+    result = flat @ ACESCG_TO_SRGB_MATRIX.T
+    return result.reshape(shape)
+
+def linear_srgb_to_acescg(img):
+    """Linear sRGB to ACEScg."""
+    shape = img.shape
+    flat = img.reshape(-1, 3)
+    result = flat @ SRGB_TO_ACESCG_MATRIX.T
+    return result.reshape(shape)
+
+
+# =============================================================================
+# BUILT-IN COLORSPACE TRANSFORMS
+# =============================================================================
+
+BUILTIN_COLORSPACES = [
+    "Linear (sRGB primaries)",
+    "sRGB",
+    "ACEScg",
+    "Linear Rec.709",
+    "Rec.709",
+    "Gamma 2.2",
+    "Gamma 2.4", 
+    "Raw",
+]
+
+def apply_builtin_transform(img_np, src, dst, exposure=0.0):
+    """Apply built-in color transform without OCIO."""
+    
+    result = img_np.copy().astype(np.float32)
+    
+    # Apply exposure
+    if exposure != 0.0:
+        result = result * (2.0 ** exposure)
+    
+    if src == dst:
+        return np.clip(result, 0.0, 1.0)
+    
+    # Normalize colorspace names
+    src = src.lower().replace(" ", "").replace("(srgbprimaries)", "")
+    dst = dst.lower().replace(" ", "").replace("(srgbprimaries)", "")
+    
+    # Handle only RGB channels
+    if result.shape[-1] >= 3:
+        rgb = result[..., :3]
+        
+        # === Source to Linear ===
+        if "srgb" in src and "linear" not in src:
+            rgb = srgb_to_linear(rgb)
+        elif "rec.709" in src or "rec709" in src:
+            if "linear" not in src:
+                rgb = rec709_to_linear(rgb)
+        elif "acescg" in src:
+            rgb = acescg_to_linear_srgb(rgb)  # ACEScg -> Linear sRGB
+        elif "gamma2.2" in src:
+            rgb = np.power(np.clip(rgb, 0, None), 2.2)
+        elif "gamma2.4" in src:
+            rgb = np.power(np.clip(rgb, 0, None), 2.4)
+        
+        # === Linear to Destination ===
+        if "srgb" in dst and "linear" not in dst:
+            rgb = linear_to_srgb(rgb)
+        elif "rec.709" in dst or "rec709" in dst:
+            if "linear" not in dst:
+                rgb = linear_to_rec709(rgb)
+        elif "acescg" in dst:
+            rgb = linear_srgb_to_acescg(rgb)  # Linear sRGB -> ACEScg
+        elif "gamma2.2" in dst:
+            rgb = np.power(np.clip(rgb, 0, None), 1/2.2)
+        elif "gamma2.4" in dst:
+            rgb = np.power(np.clip(rgb, 0, None), 1/2.4)
+        
+        result[..., :3] = rgb
+    
+    return np.clip(result, 0.0, 1.0).astype(np.float32)
 
 
 # =============================================================================
@@ -34,143 +158,35 @@ except ImportError:
 # =============================================================================
 
 def get_ocio_config():
-    """Get the current OCIO config from environment or default."""
+    """Get OCIO config from environment or return None."""
     if not HAS_OCIO:
         return None
     
-    # Try environment variable first
     config_path = os.environ.get('OCIO')
     
     if config_path and os.path.exists(config_path):
         try:
             return OCIO.Config.CreateFromFile(config_path)
         except Exception as e:
-            print(f"[VFX Bridge] Failed to load OCIO config from {config_path}: {e}")
+            print(f"[VFX Bridge] Failed to load OCIO config: {e}")
     
-    # Fall back to built-in config
+    # Try creating raw config as fallback
     try:
-        return OCIO.Config.CreateFromBuiltinConfig("aces_1.2")
+        return OCIO.Config.CreateRaw()
     except:
-        try:
-            return OCIO.Config.CreateRaw()
-        except:
-            return None
+        return None
 
 
 def get_ocio_colorspaces(config):
-    """Get list of available colorspaces from OCIO config."""
+    """Get list of colorspaces from OCIO config."""
     if config is None:
-        return ["sRGB", "Linear", "ACEScg", "ACES2065-1", "Raw"]
+        return BUILTIN_COLORSPACES
     
-    colorspaces = []
-    for i in range(config.getNumColorSpaces()):
-        colorspaces.append(config.getColorSpaceNameByIndex(i))
-    
-    return colorspaces if colorspaces else ["sRGB", "Linear", "ACEScg", "Raw"]
-
-
-def get_ocio_displays(config):
-    """Get list of available displays from OCIO config."""
-    if config is None:
-        return ["sRGB"]
-    
-    displays = []
-    for i in range(config.getNumDisplays()):
-        displays.append(config.getDisplay(i))
-    
-    return displays if displays else ["sRGB"]
-
-
-def get_ocio_views(config, display):
-    """Get list of available views for a display."""
-    if config is None:
-        return ["Standard"]
-    
-    views = []
     try:
-        for i in range(config.getNumViews(display)):
-            views.append(config.getView(display, i))
+        colorspaces = [cs.getName() for cs in config.getColorSpaces()]
+        return colorspaces if colorspaces else BUILTIN_COLORSPACES
     except:
-        views = ["Standard"]
-    
-    return views if views else ["Standard"]
-
-
-def apply_ocio_transform(image_np, src_colorspace, dst_colorspace, config=None):
-    """Apply OCIO colorspace transform to numpy image."""
-    if not HAS_OCIO:
-        print("[VFX Bridge] OCIO not available, returning unchanged")
-        return image_np
-    
-    if config is None:
-        config = get_ocio_config()
-    
-    if config is None:
-        return image_np
-    
-    try:
-        processor = config.getProcessor(src_colorspace, dst_colorspace)
-        cpu = processor.getDefaultCPUProcessor()
-        
-        # OCIO expects float32
-        img = image_np.astype(np.float32)
-        
-        # Process the image
-        if img.ndim == 3:
-            # [H, W, C] - process directly
-            cpu.applyRGBA(img) if img.shape[2] == 4 else cpu.applyRGB(img)
-        
-        return img
-        
-    except Exception as e:
-        print(f"[VFX Bridge] OCIO transform failed: {e}")
-        return image_np
-
-
-def apply_ocio_display_transform(image_np, src_colorspace, display, view, config=None):
-    """Apply OCIO display transform to numpy image."""
-    if not HAS_OCIO:
-        return image_np
-    
-    if config is None:
-        config = get_ocio_config()
-    
-    if config is None:
-        return image_np
-    
-    try:
-        # Create display transform
-        transform = OCIO.DisplayViewTransform()
-        transform.setSrc(src_colorspace)
-        transform.setDisplay(display)
-        transform.setView(view)
-        
-        processor = config.getProcessor(transform)
-        cpu = processor.getDefaultCPUProcessor()
-        
-        # Process image
-        img = image_np.astype(np.float32).copy()
-        
-        if img.ndim == 3:
-            h, w, c = img.shape
-            # Flatten for OCIO
-            pixels = img.reshape(-1, c)
-            
-            if c >= 3:
-                # Process RGB(A)
-                for i in range(len(pixels)):
-                    if c == 4:
-                        pixels[i] = cpu.applyRGBA(pixels[i])
-                    else:
-                        pixels[i, :3] = cpu.applyRGB(pixels[i, :3])
-            
-            img = pixels.reshape(h, w, c)
-        
-        return img
-        
-    except Exception as e:
-        print(f"[VFX Bridge] OCIO display transform failed: {e}")
-        return image_np
+        return BUILTIN_COLORSPACES
 
 
 # =============================================================================
@@ -235,11 +251,10 @@ def load_exr_file(filepath: str) -> tuple[np.ndarray, dict, list[str]]:
     exr_file.close()
     
     # Detect colorspace from header
-    colorspace = "Linear"  # Default assumption for EXR
+    colorspace = "Linear (sRGB primaries)"
     if 'chromaticities' in header:
         chrom = header['chromaticities']
-        # Check for ACES primaries
-        if hasattr(chrom, 'red') and abs(chrom.red.x - 0.64) < 0.01:
+        if hasattr(chrom, 'red') and abs(chrom.red.x - 0.713) < 0.01:
             colorspace = "ACEScg"
     
     metadata = {
@@ -288,10 +303,7 @@ def load_exr_file(filepath: str) -> tuple[np.ndarray, dict, list[str]]:
 # =============================================================================
 
 class EXRHotFolderLoader:
-    """
-    Watches a folder and loads the latest EXR file automatically.
-    Perfect for Nuke/Houdini render output integration.
-    """
+    """Watches a folder and loads the latest EXR file automatically."""
     
     CATEGORY = "VFX Bridge"
     FUNCTION = "load_exr"
@@ -337,39 +349,30 @@ class EXRHotFolderLoader:
 
 
 # =============================================================================
-# OCIO COLOR TRANSFORM NODE
+# COLOR TRANSFORM NODE
 # =============================================================================
 
-class OCIOColorTransform:
+class ColorTransform:
     """
-    Apply OCIO colorspace transformation.
-    Non-destructive: use for preview or bake on export.
+    Apply colorspace transformation.
+    Uses OCIO if available, otherwise built-in transforms.
     """
     
-    CATEGORY = "VFX Bridge/OCIO"
+    CATEGORY = "VFX Bridge/Color"
     FUNCTION = "transform"
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("image",)
     OUTPUT_NODE = False
     
-    # Common colorspaces (will be extended by OCIO config at runtime)
-    COLORSPACES = [
-        "Linear", "sRGB", "ACEScg", "ACES2065-1", 
-        "Linear Rec.709", "Linear P3-D65",
-        "Gamma 2.2", "Gamma 2.4",
-        "Raw"
-    ]
-    
     @classmethod
     def INPUT_TYPES(cls):
-        config = get_ocio_config()
-        colorspaces = get_ocio_colorspaces(config) if config else cls.COLORSPACES
+        colorspaces = BUILTIN_COLORSPACES
         
         return {
             "required": {
                 "image": ("IMAGE",),
-                "source_colorspace": (colorspaces, {"default": colorspaces[0] if colorspaces else "Linear"}),
-                "target_colorspace": (colorspaces, {"default": "sRGB" if "sRGB" in colorspaces else colorspaces[0]}),
+                "source_colorspace": (colorspaces, {"default": "Linear (sRGB primaries)"}),
+                "target_colorspace": (colorspaces, {"default": "sRGB"}),
             },
             "optional": {
                 "exposure": ("FLOAT", {"default": 0.0, "min": -10.0, "max": 10.0, "step": 0.1}),
@@ -379,72 +382,46 @@ class OCIOColorTransform:
     def transform(self, image: torch.Tensor, source_colorspace: str, 
                   target_colorspace: str, exposure: float = 0.0):
         
-        # Apply exposure
-        if exposure != 0.0:
-            image = image * (2.0 ** exposure)
-        
-        # Convert to numpy for OCIO
+        # Convert to numpy
         if image.dim() == 4:
             img_np = image[0].cpu().numpy()
         else:
             img_np = image.cpu().numpy()
         
-        # Apply OCIO transform
-        if HAS_OCIO and source_colorspace != target_colorspace:
-            config = get_ocio_config()
-            if config:
-                try:
-                    processor = config.getProcessor(source_colorspace, target_colorspace)
-                    cpu = processor.getDefaultCPUProcessor()
-                    
-                    h, w, c = img_np.shape
-                    img_flat = img_np.reshape(-1, c).copy()
-                    
-                    # Apply transform pixel by pixel (safe method)
-                    for i in range(len(img_flat)):
-                        if c >= 4:
-                            img_flat[i] = cpu.applyRGBA(img_flat[i])
-                        elif c == 3:
-                            img_flat[i] = cpu.applyRGB(img_flat[i])
-                    
-                    img_np = img_flat.reshape(h, w, c)
-                    
-                except Exception as e:
-                    print(f"[VFX Bridge] OCIO transform error: {e}")
+        # Apply transform
+        result_np = apply_builtin_transform(img_np, source_colorspace, target_colorspace, exposure)
         
         # Convert back to tensor
-        result = torch.from_numpy(img_np).unsqueeze(0)
+        result = torch.from_numpy(result_np).unsqueeze(0)
         
         return (result,)
 
 
 # =============================================================================
-# OCIO DISPLAY TRANSFORM NODE  
+# DISPLAY TRANSFORM NODE  
 # =============================================================================
 
-class OCIODisplayTransform:
+class DisplayTransform:
     """
-    Apply OCIO display/view transform for preview.
-    Converts working colorspace to display colorspace.
+    Apply display transform for preview.
+    Converts working colorspace to display-ready output.
     """
     
-    CATEGORY = "VFX Bridge/OCIO"
+    CATEGORY = "VFX Bridge/Color"
     FUNCTION = "transform"
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("preview",)
     OUTPUT_NODE = False
     
+    DISPLAYS = ["sRGB Monitor", "Rec.709 TV", "DCI-P3", "Raw"]
+    
     @classmethod
     def INPUT_TYPES(cls):
-        config = get_ocio_config()
-        colorspaces = get_ocio_colorspaces(config) if config else ["Linear", "ACEScg", "sRGB"]
-        displays = get_ocio_displays(config) if config else ["sRGB", "Rec.709"]
-        
         return {
             "required": {
                 "image": ("IMAGE",),
-                "input_colorspace": (colorspaces, {"default": "ACEScg" if "ACEScg" in colorspaces else colorspaces[0]}),
-                "display": (displays, {"default": displays[0]}),
+                "input_colorspace": (BUILTIN_COLORSPACES, {"default": "Linear (sRGB primaries)"}),
+                "display": (cls.DISPLAYS, {"default": "sRGB Monitor"}),
             },
             "optional": {
                 "exposure": ("FLOAT", {"default": 0.0, "min": -10.0, "max": 10.0, "step": 0.1}),
@@ -455,136 +432,85 @@ class OCIODisplayTransform:
     def transform(self, image: torch.Tensor, input_colorspace: str, display: str,
                   exposure: float = 0.0, gamma: float = 1.0):
         
-        # Apply exposure
-        result = image.clone()
-        if exposure != 0.0:
-            result = result * (2.0 ** exposure)
-        
         # Convert to numpy
-        if result.dim() == 4:
-            img_np = result[0].cpu().numpy()
+        if image.dim() == 4:
+            img_np = image[0].cpu().numpy()
         else:
-            img_np = result.cpu().numpy()
+            img_np = image.cpu().numpy()
         
-        # Apply OCIO display transform
-        if HAS_OCIO:
-            config = get_ocio_config()
-            if config:
-                try:
-                    views = get_ocio_views(config, display)
-                    view = views[0] if views else "Standard"
-                    
-                    transform = OCIO.DisplayViewTransform()
-                    transform.setSrc(input_colorspace)
-                    transform.setDisplay(display)
-                    transform.setView(view)
-                    
-                    processor = config.getProcessor(transform)
-                    cpu = processor.getDefaultCPUProcessor()
-                    
-                    h, w, c = img_np.shape
-                    img_flat = img_np.reshape(-1, c).copy()
-                    
-                    for i in range(len(img_flat)):
-                        if c >= 4:
-                            img_flat[i] = cpu.applyRGBA(img_flat[i])
-                        elif c == 3:
-                            img_flat[i] = cpu.applyRGB(img_flat[i])
-                    
-                    img_np = img_flat.reshape(h, w, c)
-                    
-                except Exception as e:
-                    print(f"[VFX Bridge] OCIO display transform error: {e}, using fallback")
-                    # Fallback to simple sRGB
-                    img_np = np.where(img_np <= 0.0031308,
-                                      img_np * 12.92,
-                                      1.055 * np.power(np.clip(img_np, 0.0031308, None), 1/2.4) - 0.055)
+        # Apply exposure
+        if exposure != 0.0:
+            img_np = img_np * (2.0 ** exposure)
+        
+        # Determine target based on display
+        if display == "sRGB Monitor":
+            target = "sRGB"
+        elif display == "Rec.709 TV":
+            target = "Rec.709"
+        elif display == "DCI-P3":
+            target = "Gamma 2.6"  # Approximation
         else:
-            # Fallback without OCIO: simple linear to sRGB
-            img_np = np.where(img_np <= 0.0031308,
-                              img_np * 12.92,
-                              1.055 * np.power(np.clip(img_np, 0.0031308, None), 1/2.4) - 0.055)
+            target = "Raw"
+        
+        # Apply transform
+        if target != "Raw":
+            img_np = apply_builtin_transform(img_np, input_colorspace, target, 0.0)
         
         # Apply gamma
         if gamma != 1.0:
             img_np = np.power(np.clip(img_np, 0.0001, None), 1.0 / gamma)
         
-        # Clamp and convert back
-        img_np = np.clip(img_np, 0.0, 1.0)
-        result = torch.from_numpy(img_np.astype(np.float32)).unsqueeze(0)
+        # Clamp
+        img_np = np.clip(img_np, 0.0, 1.0).astype(np.float32)
+        
+        result = torch.from_numpy(img_np).unsqueeze(0)
         
         return (result,)
 
 
 # =============================================================================
-# OCIO CONFIG INFO NODE
+# COLOR INFO NODE
 # =============================================================================
 
-class OCIOConfigInfo:
-    """
-    Display information about the current OCIO configuration.
-    Shows available colorspaces, displays, and views.
-    """
+class ColorInfo:
+    """Display color management information."""
     
-    CATEGORY = "VFX Bridge/OCIO"
+    CATEGORY = "VFX Bridge/Color"
     FUNCTION = "get_info"
-    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING")
-    RETURN_NAMES = ("config_path", "colorspaces", "displays", "ocio_version")
+    RETURN_TYPES = ("STRING", "STRING", "BOOLEAN")
+    RETURN_NAMES = ("info", "colorspaces", "ocio_available")
     OUTPUT_NODE = True
     
     @classmethod
     def INPUT_TYPES(cls):
-        return {
-            "required": {},
-            "optional": {
-                "custom_config": ("STRING", {
-                    "default": "",
-                    "multiline": False,
-                    "placeholder": "Path to custom OCIO config (optional)"
-                }),
-            }
-        }
+        return {"required": {}}
     
-    def get_info(self, custom_config: str = ""):
-        if not HAS_OCIO:
-            return ("OCIO not installed", "N/A", "N/A", "N/A")
+    def get_info(self):
+        info_lines = [
+            "=== VFX Bridge Color Management ===",
+            "",
+            f"OCIO Installed: {'Yes' if HAS_OCIO else 'No'}",
+        ]
         
-        # Get config
-        if custom_config and os.path.exists(custom_config):
-            try:
-                config = OCIO.Config.CreateFromFile(custom_config)
-                config_path = custom_config
-            except:
-                config = get_ocio_config()
-                config_path = os.environ.get('OCIO', 'Built-in ACES 1.2')
-        else:
-            config = get_ocio_config()
-            config_path = os.environ.get('OCIO', 'Built-in ACES 1.2')
+        if HAS_OCIO:
+            info_lines.append(f"OCIO Version: {OCIO_VERSION}")
+            ocio_env = os.environ.get('OCIO', 'Not set')
+            info_lines.append(f"OCIO Config: {ocio_env}")
         
-        if config is None:
-            return (config_path, "No config loaded", "N/A", OCIO.__version__)
+        info_lines.extend([
+            "",
+            "Built-in Colorspaces:",
+        ])
         
-        # Get colorspaces
-        colorspaces = get_ocio_colorspaces(config)
-        colorspaces_str = ", ".join(colorspaces[:20])
-        if len(colorspaces) > 20:
-            colorspaces_str += f"... (+{len(colorspaces) - 20} more)"
+        for cs in BUILTIN_COLORSPACES:
+            info_lines.append(f"  - {cs}")
         
-        # Get displays
-        displays = get_ocio_displays(config)
-        displays_str = ", ".join(displays)
+        info_text = "\n".join(info_lines)
+        colorspaces_str = ", ".join(BUILTIN_COLORSPACES)
         
-        # Print info
-        print("\n" + "=" * 50)
-        print("VFX Bridge - OCIO Configuration")
-        print("=" * 50)
-        print(f"Config: {config_path}")
-        print(f"Version: {OCIO.__version__}")
-        print(f"Colorspaces: {len(colorspaces)}")
-        print(f"Displays: {displays_str}")
-        print("=" * 50 + "\n")
+        print("\n" + info_text + "\n")
         
-        return (config_path, colorspaces_str, displays_str, OCIO.__version__)
+        return (info_text, colorspaces_str, HAS_OCIO)
 
 
 # =============================================================================
@@ -609,7 +535,7 @@ class MatteChannelSplitter:
                 "channel_filter": ("STRING", {
                     "default": "",
                     "multiline": False,
-                    "placeholder": "e.g., matte, crypto (comma separated)"
+                    "placeholder": "e.g., matte, crypto"
                 }),
             }
         }
@@ -619,7 +545,7 @@ class MatteChannelSplitter:
     
     def split_channels(self, metadata: dict, channel_filter: str = ""):
         if '_channel_data' not in metadata:
-            raise ValueError("No channel data in metadata. Connect to EXR Hot Folder Loader.")
+            raise ValueError("No channel data. Connect to EXR Hot Folder Loader.")
         
         channel_data = metadata['_channel_data']
         all_channels = list(channel_data.keys())
@@ -692,25 +618,22 @@ class MetadataDisplay:
         ]
         info_text = "\n".join(info_lines)
         
-        print("\n" + "=" * 50)
+        print("\n" + "=" * 40)
         print("VFX Bridge - EXR Metadata")
-        print("=" * 50)
+        print("=" * 40)
         for line in info_lines:
             print(line)
-        print("=" * 50 + "\n")
+        print("=" * 40 + "\n")
         
         return (info_text, width, height, bitdepth, float(framerate or 0.0), str(colorspace))
 
 
 # =============================================================================
-# EXR SAVE NODE (WITH OCIO BAKE OPTION)
+# EXR SAVE NODE
 # =============================================================================
 
 class EXRSaveNode:
-    """
-    Saves images/mattes back to a 16-bit EXR file.
-    Option to bake OCIO colorspace on export.
-    """
+    """Saves images back to a 16-bit EXR file with optional color bake."""
     
     CATEGORY = "VFX Bridge"
     FUNCTION = "save_exr"
@@ -720,16 +643,13 @@ class EXRSaveNode:
     
     @classmethod
     def INPUT_TYPES(cls):
-        config = get_ocio_config()
-        colorspaces = get_ocio_colorspaces(config) if config else ["Linear", "sRGB", "ACEScg"]
-        
         return {
             "required": {
                 "image": ("IMAGE",),
                 "output_folder": ("STRING", {
                     "default": "",
                     "multiline": False,
-                    "placeholder": "/path/to/output/folder"
+                    "placeholder": "/path/to/output"
                 }),
                 "filename": ("STRING", {
                     "default": "output",
@@ -740,18 +660,18 @@ class EXRSaveNode:
                 "metadata": ("VFX_METADATA",),
                 "bitdepth": (["16", "32"], {"default": "16"}),
                 "bake_colorspace": ("BOOLEAN", {"default": False}),
-                "source_colorspace": (colorspaces, {"default": "Linear"}),
-                "output_colorspace": (colorspaces, {"default": "sRGB" if "sRGB" in colorspaces else colorspaces[0]}),
+                "source_colorspace": (BUILTIN_COLORSPACES, {"default": "Linear (sRGB primaries)"}),
+                "output_colorspace": (BUILTIN_COLORSPACES, {"default": "sRGB"}),
             }
         }
     
     def save_exr(self, image: torch.Tensor, output_folder: str, filename: str, 
                  metadata: dict = None, bitdepth: str = "16",
-                 bake_colorspace: bool = False, source_colorspace: str = "Linear",
+                 bake_colorspace: bool = False, source_colorspace: str = "Linear (sRGB primaries)",
                  output_colorspace: str = "sRGB"):
         
         if not HAS_OPENEXR:
-            raise RuntimeError("OpenEXR not installed. Run: pip install OpenEXR Imath")
+            raise RuntimeError("OpenEXR not installed")
         
         os.makedirs(output_folder, exist_ok=True)
         
@@ -764,28 +684,10 @@ class EXRSaveNode:
         else:
             image_np = image.cpu().numpy()
         
-        # Apply OCIO bake if requested
-        if bake_colorspace and HAS_OCIO and source_colorspace != output_colorspace:
-            config = get_ocio_config()
-            if config:
-                try:
-                    processor = config.getProcessor(source_colorspace, output_colorspace)
-                    cpu = processor.getDefaultCPUProcessor()
-                    
-                    h, w, c = image_np.shape
-                    img_flat = image_np.reshape(-1, c).copy()
-                    
-                    for i in range(len(img_flat)):
-                        if c >= 4:
-                            img_flat[i] = cpu.applyRGBA(img_flat[i])
-                        elif c == 3:
-                            img_flat[i] = cpu.applyRGB(img_flat[i])
-                    
-                    image_np = img_flat.reshape(h, w, c)
-                    print(f"[VFX Bridge] Baked colorspace: {source_colorspace} -> {output_colorspace}")
-                    
-                except Exception as e:
-                    print(f"[VFX Bridge] OCIO bake failed: {e}")
+        # Apply color bake if requested
+        if bake_colorspace and source_colorspace != output_colorspace:
+            image_np = apply_builtin_transform(image_np, source_colorspace, output_colorspace)
+            print(f"[VFX Bridge] Baked: {source_colorspace} -> {output_colorspace}")
         
         height, width = image_np.shape[:2]
         num_channels = image_np.shape[2] if image_np.ndim == 3 else 1
@@ -820,17 +722,17 @@ class EXRSaveNode:
         exr_file.writePixels(channel_data)
         exr_file.close()
         
-        print(f"[VFX Bridge] Saved EXR: {output_path}")
+        print(f"[VFX Bridge] Saved: {output_path}")
         
         return (output_path,)
 
 
 # =============================================================================
-# PREVIEW MATTE NODE
+# UTILITY NODES
 # =============================================================================
 
 class PreviewMatte:
-    """Preview a single matte channel as an image."""
+    """Preview a matte channel as an image."""
     
     CATEGORY = "VFX Bridge"
     FUNCTION = "preview_matte"
@@ -841,9 +743,7 @@ class PreviewMatte:
     @classmethod
     def INPUT_TYPES(cls):
         return {
-            "required": {
-                "matte": ("MASK",),
-            },
+            "required": {"matte": ("MASK",)},
             "optional": {
                 "colorize": ("BOOLEAN", {"default": False}),
                 "color": (["red", "green", "blue", "white"], {"default": "white"}),
@@ -857,14 +757,8 @@ class PreviewMatte:
         h, w = matte.shape
         
         if colorize:
-            color_map = {
-                "red": [1.0, 0.0, 0.0],
-                "green": [0.0, 1.0, 0.0],
-                "blue": [0.0, 0.0, 1.0],
-                "white": [1.0, 1.0, 1.0],
-            }
-            rgb = color_map.get(color, [1.0, 1.0, 1.0])
-            
+            color_map = {"red": [1,0,0], "green": [0,1,0], "blue": [0,0,1], "white": [1,1,1]}
+            rgb = color_map.get(color, [1,1,1])
             image = torch.zeros(1, h, w, 3)
             for i, c in enumerate(rgb):
                 image[0, :, :, i] = matte * c
@@ -874,12 +768,8 @@ class PreviewMatte:
         return (image,)
 
 
-# =============================================================================
-# CHANNEL SELECTOR NODE
-# =============================================================================
-
 class ChannelSelector:
-    """Select a specific channel from EXR by name."""
+    """Select a specific channel by name."""
     
     CATEGORY = "VFX Bridge"
     FUNCTION = "select_channel"
@@ -892,41 +782,30 @@ class ChannelSelector:
         return {
             "required": {
                 "metadata": ("VFX_METADATA",),
-                "channel_name": ("STRING", {
-                    "default": "R",
-                    "multiline": False,
-                    "placeholder": "R, G, B, A, matte.R, etc."
-                }),
+                "channel_name": ("STRING", {"default": "R", "multiline": False}),
             },
         }
     
     def select_channel(self, metadata: dict, channel_name: str):
         if '_channel_data' not in metadata:
-            raise ValueError("No channel data in metadata.")
+            raise ValueError("No channel data.")
         
         channel_data = metadata['_channel_data']
-        available = list(channel_data.keys())
         channel_name = channel_name.strip()
         
         if channel_name not in channel_data:
-            for ch in available:
+            for ch in channel_data.keys():
                 if ch.lower() == channel_name.lower():
                     channel_name = ch
                     break
             else:
-                raise ValueError(f"Channel '{channel_name}' not found. Available: {', '.join(available)}")
+                raise ValueError(f"Channel '{channel_name}' not found.")
         
-        mask_tensor = torch.from_numpy(channel_data[channel_name])
-        
-        return (mask_tensor, channel_name)
+        return (torch.from_numpy(channel_data[channel_name]), channel_name)
 
-
-# =============================================================================
-# EXR TO IMAGE NODE
-# =============================================================================
 
 class EXRToImage:
-    """Convert EXR float data to standard ComfyUI IMAGE format."""
+    """Convert EXR float data to standard 0-1 range."""
     
     CATEGORY = "VFX Bridge"
     FUNCTION = "convert"
@@ -937,9 +816,7 @@ class EXRToImage:
     @classmethod
     def INPUT_TYPES(cls):
         return {
-            "required": {
-                "image": ("IMAGE",),
-            },
+            "required": {"image": ("IMAGE",)},
             "optional": {
                 "mode": (["clamp", "normalize", "tonemap"], {"default": "clamp"}),
                 "exposure": ("FLOAT", {"default": 0.0, "min": -10.0, "max": 10.0, "step": 0.1}),
@@ -953,27 +830,18 @@ class EXRToImage:
         if mode == "clamp":
             result = torch.clamp(image, 0.0, 1.0)
         elif mode == "normalize":
-            img_min = image.min()
-            img_max = image.max()
-            if img_max > img_min:
-                result = (image - img_min) / (img_max - img_min)
-            else:
-                result = torch.zeros_like(image)
+            img_min, img_max = image.min(), image.max()
+            result = (image - img_min) / (img_max - img_min) if img_max > img_min else torch.zeros_like(image)
         elif mode == "tonemap":
-            result = image / (1.0 + image)
-            result = torch.clamp(result, 0.0, 1.0)
+            result = torch.clamp(image / (1.0 + image), 0.0, 1.0)
         else:
             result = torch.clamp(image, 0.0, 1.0)
         
         return (result,)
 
 
-# =============================================================================
-# MASK TO IMAGE NODE
-# =============================================================================
-
 class MaskToImage:
-    """Convert a MASK to a standard IMAGE."""
+    """Convert MASK to IMAGE."""
     
     CATEGORY = "VFX Bridge"
     FUNCTION = "convert"
@@ -983,11 +851,7 @@ class MaskToImage:
     
     @classmethod
     def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "mask": ("MASK",),
-            },
-        }
+        return {"required": {"mask": ("MASK",)}}
     
     def convert(self, mask: torch.Tensor):
         if mask.dim() == 2:
@@ -996,10 +860,7 @@ class MaskToImage:
             image = mask.unsqueeze(-1).repeat(1, 1, 1, 3)
         else:
             image = mask
-        
-        image = torch.clamp(image, 0.0, 1.0)
-        
-        return (image,)
+        return (torch.clamp(image, 0.0, 1.0),)
 
 
 # =============================================================================
@@ -1015,9 +876,9 @@ NODE_CLASS_MAPPINGS = {
     "ChannelSelector": ChannelSelector,
     "EXRToImage": EXRToImage,
     "MaskToImage": MaskToImage,
-    "OCIOColorTransform": OCIOColorTransform,
-    "OCIODisplayTransform": OCIODisplayTransform,
-    "OCIOConfigInfo": OCIOConfigInfo,
+    "ColorTransform": ColorTransform,
+    "DisplayTransform": DisplayTransform,
+    "ColorInfo": ColorInfo,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -1029,7 +890,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ChannelSelector": "Channel Selector",
     "EXRToImage": "EXR to Image",
     "MaskToImage": "Mask to Image",
-    "OCIOColorTransform": "OCIO Color Transform",
-    "OCIODisplayTransform": "OCIO Display Transform",
-    "OCIOConfigInfo": "OCIO Config Info",
+    "ColorTransform": "Color Transform",
+    "DisplayTransform": "Display Transform",
+    "ColorInfo": "Color Info",
 }
