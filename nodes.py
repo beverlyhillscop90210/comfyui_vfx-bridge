@@ -299,6 +299,20 @@ def load_exr_file(filepath: str) -> tuple[np.ndarray, dict, list[str]]:
 
 
 # =============================================================================
+# EXR CACHE
+# =============================================================================
+
+# Module-level cache for EXR data to avoid reloading on every generation
+_exr_cache = {
+    "file_hash": "",
+    "file_path": "",
+    "image_data": None,
+    "metadata": None,
+    "channels": None,
+}
+
+
+# =============================================================================
 # EXR HOT FOLDER LOADER NODE
 # =============================================================================
 
@@ -323,12 +337,23 @@ class EXRHotFolderLoader:
             },
             "optional": {
                 "auto_refresh": ("BOOLEAN", {"default": True}),
+                "cache_enabled": ("BOOLEAN", {"default": False, "tooltip": "When enabled, caches the loaded EXR to avoid reloading on every generation. Disable to always reload from disk."}),
                 "output_mode": (["raw", "display_ready"], {"default": "raw"}),
             }
         }
     
     @classmethod
-    def IS_CHANGED(cls, folder_path, auto_refresh=True):
+    def IS_CHANGED(cls, folder_path, auto_refresh=True, cache_enabled=False, output_mode="raw"):
+        if cache_enabled:
+            # When caching is enabled, only report change if cache is empty or file changed
+            latest_exr = get_latest_exr(folder_path)
+            if latest_exr:
+                current_hash = get_file_hash(latest_exr)
+                if _exr_cache["file_hash"] == current_hash and _exr_cache["image_data"] is not None:
+                    # Cache is valid, don't trigger reload
+                    return _exr_cache["file_hash"]
+                return current_hash
+            return ""
         if not auto_refresh:
             return False
         latest_exr = get_latest_exr(folder_path)
@@ -336,13 +361,39 @@ class EXRHotFolderLoader:
             return get_file_hash(latest_exr)
         return ""
     
-    def load_exr(self, folder_path: str, auto_refresh: bool = True, output_mode: str = "raw"):
+    def load_exr(self, folder_path: str, auto_refresh: bool = True, cache_enabled: bool = False, output_mode: str = "raw"):
+        global _exr_cache
+        
         latest_exr = get_latest_exr(folder_path)
         
         if latest_exr is None:
             raise ValueError(f"No EXR files found in: {folder_path}")
         
-        image_data, metadata, channels = load_exr_file(latest_exr)
+        current_hash = get_file_hash(latest_exr)
+        
+        # Check if we can use cached data
+        if cache_enabled:
+            if (_exr_cache["file_hash"] == current_hash and 
+                _exr_cache["file_path"] == latest_exr and
+                _exr_cache["image_data"] is not None):
+                # Use cached data
+                print(f"[VFX Bridge] Using cached EXR: {os.path.basename(latest_exr)}")
+                image_data = _exr_cache["image_data"].copy()
+                metadata = _exr_cache["metadata"].copy()
+                metadata['_channel_data'] = {k: v.copy() for k, v in _exr_cache["metadata"].get('_channel_data', {}).items()}
+                channels = _exr_cache["channels"]
+            else:
+                # Load and cache
+                print(f"[VFX Bridge] Loading and caching EXR: {os.path.basename(latest_exr)}")
+                image_data, metadata, channels = load_exr_file(latest_exr)
+                _exr_cache["file_hash"] = current_hash
+                _exr_cache["file_path"] = latest_exr
+                _exr_cache["image_data"] = image_data.copy()
+                _exr_cache["metadata"] = {k: v.copy() if isinstance(v, (dict, np.ndarray)) else v for k, v in metadata.items()}
+                _exr_cache["channels"] = channels
+        else:
+            # No caching, always load fresh
+            image_data, metadata, channels = load_exr_file(latest_exr)
         
         # Output mode: raw = untouched linear data, display_ready = clamped 0-1 for preview
         if output_mode == "display_ready":
