@@ -692,6 +692,129 @@ class MaskToImage:
 
 
 # =============================================================================
+# OUTPUT TRANSFORM NODE (View Transform / LUT)
+# =============================================================================
+
+class OutputTransform:
+    """
+    Apply a viewing transform to convert from working colorspace to display.
+    Useful for ACES/Linear → sRGB/Rec.709 conversion for preview.
+    
+    Note: This is a simple gamma/matrix transform, not full OCIO (Phase 3).
+    """
+    
+    CATEGORY = "VFX Bridge"
+    FUNCTION = "transform"
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    OUTPUT_NODE = False
+    
+    # Common transforms
+    TRANSFORMS = [
+        "Linear → sRGB",
+        "Linear → Rec.709", 
+        "ACEScg → sRGB",
+        "ACEScg → Rec.709",
+        "Log (Cineon) → sRGB",
+        "Raw (No Transform)",
+    ]
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "transform": (cls.TRANSFORMS, {"default": "Linear → sRGB"}),
+            },
+            "optional": {
+                "exposure": ("FLOAT", {"default": 0.0, "min": -10.0, "max": 10.0, "step": 0.1}),
+                "gamma": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 4.0, "step": 0.05}),
+            }
+        }
+    
+    def transform(self, image: torch.Tensor, transform: str, 
+                  exposure: float = 0.0, gamma: float = 1.0):
+        """Apply viewing transform."""
+        
+        result = image.clone()
+        
+        # Apply exposure (in stops)
+        if exposure != 0.0:
+            result = result * (2.0 ** exposure)
+        
+        # Apply transform
+        if transform == "Linear → sRGB":
+            # Linear to sRGB gamma curve
+            result = self._linear_to_srgb(result)
+            
+        elif transform == "Linear → Rec.709":
+            # Linear to Rec.709 (similar to sRGB but slightly different)
+            result = self._linear_to_rec709(result)
+            
+        elif transform == "ACEScg → sRGB":
+            # ACEScg to sRGB (simplified - matrix + gamma)
+            result = self._acescg_to_srgb(result)
+            
+        elif transform == "ACEScg → Rec.709":
+            # ACEScg to Rec.709
+            result = self._acescg_to_rec709(result)
+            
+        elif transform == "Log (Cineon) → sRGB":
+            # Cineon Log to Linear, then to sRGB
+            result = self._log_to_linear(result)
+            result = self._linear_to_srgb(result)
+            
+        # Raw = no transform, just pass through
+        
+        # Apply additional gamma if not 1.0
+        if gamma != 1.0:
+            result = torch.pow(torch.clamp(result, 0.0001, None), 1.0 / gamma)
+        
+        # Clamp final result
+        result = torch.clamp(result, 0.0, 1.0)
+        
+        return (result,)
+    
+    def _linear_to_srgb(self, img):
+        """Linear to sRGB transfer function."""
+        # sRGB formula: 12.92 * L for L <= 0.0031308
+        #               1.055 * L^(1/2.4) - 0.055 for L > 0.0031308
+        threshold = 0.0031308
+        low = img * 12.92
+        high = 1.055 * torch.pow(torch.clamp(img, threshold, None), 1.0/2.4) - 0.055
+        return torch.where(img <= threshold, low, high)
+    
+    def _linear_to_rec709(self, img):
+        """Linear to Rec.709 transfer function."""
+        # Rec.709: 4.5 * L for L < 0.018
+        #          1.099 * L^0.45 - 0.099 for L >= 0.018
+        threshold = 0.018
+        low = img * 4.5
+        high = 1.099 * torch.pow(torch.clamp(img, threshold, None), 0.45) - 0.099
+        return torch.where(img < threshold, low, high)
+    
+    def _acescg_to_srgb(self, img):
+        """Simplified ACEScg to sRGB (AP1 to sRGB primaries + gamma)."""
+        # Simplified: just apply sRGB gamma (full would need matrix transform)
+        # For proper ACES, use OCIO in Phase 3
+        return self._linear_to_srgb(img)
+    
+    def _acescg_to_rec709(self, img):
+        """Simplified ACEScg to Rec.709."""
+        return self._linear_to_rec709(img)
+    
+    def _log_to_linear(self, img):
+        """Cineon Log to Linear."""
+        # Cineon formula (simplified)
+        black = 95.0 / 1023.0
+        white = 685.0 / 1023.0
+        gamma = 0.6
+        
+        normalized = (img - black) / (white - black)
+        return torch.pow(torch.clamp(normalized, 0.0001, None), 1.0 / gamma)
+
+
+# =============================================================================
 # NODE MAPPINGS
 # =============================================================================
 
@@ -704,6 +827,7 @@ NODE_CLASS_MAPPINGS = {
     "ChannelSelector": ChannelSelector,
     "EXRToImage": EXRToImage,
     "MaskToImage": MaskToImage,
+    "OutputTransform": OutputTransform,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -715,4 +839,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ChannelSelector": "Channel Selector",
     "EXRToImage": "EXR to Image",
     "MaskToImage": "Mask to Image",
+    "OutputTransform": "Output Transform",
 }

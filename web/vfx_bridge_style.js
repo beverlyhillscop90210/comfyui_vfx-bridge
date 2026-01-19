@@ -11,7 +11,8 @@ const VFX_BRIDGE_NODES = [
     "PreviewMatte",
     "ChannelSelector",
     "EXRToImage",
-    "MaskToImage"
+    "MaskToImage",
+    "OutputTransform"
 ];
 
 // Anthracite - one clean color
