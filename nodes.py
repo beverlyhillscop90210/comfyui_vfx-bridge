@@ -606,9 +606,12 @@ class MetadataDisplay:
             "required": {
                 "metadata": ("VFX_METADATA",),
             },
+            "optional": {
+                "aovs": ("AOVS",),  # backward compatibility
+            },
         }
     
-    def display_metadata(self, metadata: dict):
+    def display_metadata(self, metadata: dict, aovs=None):
         resolution = metadata.get('resolution', (0, 0))
         width, height = resolution
         bitdepth = metadata.get('bitdepth', 16)
@@ -667,6 +670,9 @@ class EXRSaveNode:
             },
             "optional": {
                 "metadata": ("VFX_METADATA",),
+            },
+            "optional": {
+                "aovs": ("AOVS",),  # backward compatibility
                 "bitdepth": (["16", "32"], {"default": "16"}),
                 "bake_colorspace": ("BOOLEAN", {"default": False}),
                 "source_colorspace": (BUILTIN_COLORSPACES, {"default": "Linear (sRGB primaries)"}),
